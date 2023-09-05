@@ -104,7 +104,7 @@ def post_language_model_processing(
         return output.transpose(0, 1).contiguous()
     else:
         if loss_mask is not None:
-            assert parallel_output is False
+            assert parallel_output is True
             # output_loss: [b, s]
             output_loss = torch.zeros_like(labels)
 
