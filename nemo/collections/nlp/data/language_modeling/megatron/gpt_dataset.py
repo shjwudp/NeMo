@@ -30,6 +30,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import make_dataset as make_indexed_dataset
 from nemo.core import Dataset
 from nemo.utils import logging
+from nemo.collections.nlp.data.language_modeling.wikitext_dataset import WikiTextDataset
 
 try:
     from megatron.core import parallel_state
@@ -78,7 +79,7 @@ def build_dataset(cfg, trainer, data_prefix, data_impl, num_samples, seq_length,
             dataset = _build_dataset(prefixes[i], datasets_num_samples[i])
             datasets.append(dataset)
         return BlendableDataset(datasets, weights, num_samples)
-
+    
 
 def build_train_valid_test_datasets(
     cfg,
@@ -103,6 +104,14 @@ def build_train_valid_test_datasets(
         train_ds = MockGPTDataset(cfg, tokenizer, "train", int(train_valid_test_num_samples[0]), seq_length, seed,)
         valid_ds = MockGPTDataset(cfg, tokenizer, "valid", int(train_valid_test_num_samples[1]), seq_length, seed,)
         test_ds = MockGPTDataset(cfg, tokenizer, "test", int(train_valid_test_num_samples[2]), seq_length, seed,)
+        return train_ds, valid_ds, test_ds
+    
+    if data_impl == "hf_wikitext":
+        logging.info("Initializing Huggingface Wikitext dataset for train, validate, and test")
+        train_ds = WikiTextDataset(tokenizer, seq_length, split="train")
+        valid_ds = WikiTextDataset(tokenizer, seq_length, split="valid")
+        test_ds = WikiTextDataset(tokenizer, seq_length, split="test")
+
         return train_ds, valid_ds, test_ds
 
     if isinstance(data_prefix, DictConfig):
