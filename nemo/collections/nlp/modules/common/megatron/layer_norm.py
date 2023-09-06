@@ -42,7 +42,7 @@ def get_layer_norm(
     elif ln_type == 'low_precision_layernorm':
         ln = LPLayerNorm(hidden_size=hidden_size, eps=eps)
     elif ln_type == 'rmsnorm':
-        ln = MixedFusedRMSNorm(hidden_size=hidden_size, eps=eps)
+        ln = MixedFusedRMSNorm(normalized_shape=hidden_size, eps=eps)
 
     if sequence_parallel:
         # mark sequence parallelism in layer norm parameters
