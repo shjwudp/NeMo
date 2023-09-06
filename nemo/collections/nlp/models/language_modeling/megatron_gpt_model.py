@@ -713,11 +713,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             self._append_sequence_parallel_module_grads(self.model, grads)
 
-        if len(grads) != 0:
-            coalesced = torch._utils._flatten_dense_tensors(grads)
-            torch.distributed.all_reduce(coalesced, group=parallel_state.get_tensor_model_parallel_group())
-            for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):
-                buf.copy_(synced)
+        coalesced = torch._utils._flatten_dense_tensors(grads)
+        torch.distributed.all_reduce(coalesced, group=parallel_state.get_tensor_model_parallel_group())
+        for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):
+            buf.copy_(synced)
 
     def allreduce_first_last_embeddings(self):
 
