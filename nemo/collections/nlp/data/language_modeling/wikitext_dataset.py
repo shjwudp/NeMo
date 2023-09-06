@@ -1,6 +1,7 @@
 import os
 import itertools
 
+import torch
 from datasets import load_dataset
 
 from nemo.core.classes import Dataset
@@ -30,7 +31,7 @@ def fixed_seq_length_of_datasets(
             k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
             for k, t in concatenated_examples.items()
         }
-        result["labels"] = result["input_ids"].copy()
+
         return result
 
     lm_datasets = datasets.map(
@@ -63,7 +64,7 @@ class WikitextDataset(Dataset):
         raw_dataset = load_dataset("wikitext", name, split=split)
         column_names = raw_dataset.column_names
         tokenized_dataset = raw_dataset.map(
-            lambda examples: {"input_ids": tokenizer.text_to_ids(examples["text"])},
+            lambda examples: {"tokens": tokenizer.text_to_ids(examples["text"])},
             batched=True,
             remove_columns=column_names,
             load_from_cache_file=load_from_cache_file,
@@ -77,11 +78,21 @@ class WikitextDataset(Dataset):
             load_from_cache_file=load_from_cache_file,
         )
         self.dataset = lm_dataset
+        self.attention_mask = torch.tril(torch.ones((self.seq_length, self.seq_length))).unsqueeze(0)
+        self.attention_mask = self.attention_mask < 0.5
+        self.loss_mask = torch.ones(self.seq_length, dtype=torch.float)
+        self.position_ids = torch.arange(self.seq_length, dtype=torch.int64)
 
     def __len__(self):
         return len(self.dataset)
     
     def __getitem__(self, idx):
         item = self.dataset[idx]
-        print(item)
+        item.update(dict(
+            tokens=torch.tensor(item["tokens"]),
+            labels=torch.tensor(item["tokens"]),
+            attention_mask=self.attention_mask,
+            loss_mask=self.loss_mask,
+            position_ids=self.position_ids,
+        ))
         return item
