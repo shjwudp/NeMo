@@ -63,8 +63,18 @@ class WikitextDataset(Dataset):
         self.name = name
         raw_dataset = load_dataset("wikitext", name, split=split)
         column_names = raw_dataset.column_names
+
+        def tokenize(examples):
+            ids = []
+            for text in examples["text"]:
+                id_or_ids = tokenizer.text_to_ids(text)
+                if id_or_ids is not list:
+                    id_or_ids = [id_or_ids]
+                ids += id_or_ids
+            return ids
+
         tokenized_dataset = raw_dataset.map(
-            lambda examples: {"tokens": tokenizer.text_to_ids(examples["text"])},
+            lambda examples: {"tokens": tokenize(examples)},
             batched=True,
             remove_columns=column_names,
             load_from_cache_file=load_from_cache_file,

@@ -19,7 +19,7 @@ import torch
 from tqdm import tqdm
 
 
-def measure_loops(cls_model, kind: str, loop: Callable, num_runs: int = 10, num_epochs: int = 10):
+def measure_loops(cls_model, cfg, kind: str, loop: Callable, num_runs: int = 10, num_epochs: int = 10):
     """Returns an array with the last loss from each epoch for each run."""
     hist_losses = []
     hist_durations = []
@@ -37,7 +37,7 @@ def measure_loops(cls_model, kind: str, loop: Callable, num_runs: int = 10, num_
 
         time_start = time.perf_counter()
 
-        final_loss, used_memory = loop(cls_model, idx=i, device_type=device_type, num_epochs=num_epochs)
+        final_loss, used_memory = loop(cls_model, cfg, idx=i, device_type=device_type, num_epochs=num_epochs)
 
         time_end = time.perf_counter()
 

@@ -16,15 +16,12 @@ import os
 import numpy as np
 import pytest
 import torch
+from omegaconf import DictConfig
+from pytorch_lightning import seed_everything, Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
-
-from lightning.pytorch import seed_everything, Trainer
-from parity_pytorch.measure import measure_loops
-from tests_pytorch.helpers.advanced_models import ParityModuleMNIST, ParityModuleRNN
-
-_EXTEND_BENCHMARKS = os.getenv("PL_RUNNING_BENCHMARKS", "0") == "1"
-_SHORT_BENCHMARKS = not _EXTEND_BENCHMARKS
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from .measure import measure_loops
 
 
 def assert_parity_relative(mp_values, v_values, norm_by: float = 1, max_diff: float = 0.1):
@@ -53,14 +50,18 @@ def assert_parity_absolute(mp_values, v_values, norm_by: float = 1, max_diff: fl
     ],
 )
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires GPU machine")
+@pytest.mark.unit
 def test_pytorch_parity(
-    cls_model, tp: int, sequence_parallel: bool, max_diff_speed: float, max_diff_memory: float, num_epochs: int, num_runs: int
+    cls_model, model_cfg, tp, sequence_parallel, max_diff_speed, max_diff_memory, num_epochs, num_runs
 ):
-    """Verify that the same  pytorch and lightning models achieve the same results."""
+    """Verify that the same model with or without model parallel can achieve the same results."""
+
+    vanilla = measure_loops(cls_model, DictConfig(model_cfg), kind="Vanilla GPT", loop=vanilla_loop, num_epochs=num_epochs, num_runs=num_runs)
+    model_cfg["tensor_model_parallel_size"] = tp
+    model_cfg["sequence_parallel"] = sequence_parallel
     mp = measure_loops(
-        cls_model, kind="Model Parallel GPT", loop=model_parallel_loop, num_epochs=num_epochs, num_runs=num_runs
+        cls_model, DictConfig(model_cfg), kind="Model Parallel GPT", loop=model_parallel_loop, num_epochs=num_epochs, num_runs=num_runs
     )
-    vanilla = measure_loops(cls_model, kind="Vanilla GPT", loop=vanilla_loop, num_epochs=num_epochs, num_runs=num_runs)
 
     # make sure the losses match exactly  to 5 decimal places
     print(f"Losses are for... \n vanilla: {vanilla['losses']} \n model-parallel: {mp['losses']}")
@@ -84,41 +85,15 @@ def _hook_memory():
     return used_memory
 
 
-def vanilla_loop(cls_model, idx, device_type: str = "cuda", num_epochs=10):
-    device = torch.device(device_type)
-    # set seed
+def vanilla_loop(cls_model, cfg, idx, device_type: str = "cuda", num_epochs=1):
     seed_everything(idx)
 
-    # init model parts
-    model = cls_model()
-    dl = model.train_dataloader()
-    optimizer = model.configure_optimizers()
+    strategy = NLPDDPStrategy(
+        no_ddp_communication_hook=True,
+        gradient_as_bucket_view=cfg.gradient_as_bucket_view,
+        find_unused_parameters=False,
+    )
 
-    # model to GPU
-    model = model.to(device)
-
-    epoch_losses = []
-    # as the first run is skipped, no need to run it long
-    for epoch in range(num_epochs if idx > 0 else 1):
-        # run through full training set
-        for j, batch in enumerate(dl):
-            batch = [x.to(device) for x in batch]
-            loss_dict = model.training_step(batch, j)
-            loss = loss_dict["loss"]
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-
-        # track last epoch loss
-        epoch_losses.append(loss.item())
-
-    return epoch_losses[-1], _hook_memory()
-
-
-def model_parallel_loop(cls_model, idx, device_type: str = "cuda", num_epochs=10):
-    seed_everything(idx)
-
-    model = cls_model()
     # init model parts
     trainer = Trainer(
         # as the first run is skipped, no need to run it long
@@ -129,9 +104,111 @@ def model_parallel_loop(cls_model, idx, device_type: str = "cuda", num_epochs=10
         accelerator="gpu" if device_type == "cuda" else "cpu",
         devices=1,
         logger=False,
+        limit_val_batches=1,
         use_distributed_sampler=False,
         benchmark=False,
+        strategy=strategy,
     )
+    model = cls_model(cfg, trainer)
     trainer.fit(model)
 
     return model._loss[-1], _hook_memory()
+
+
+def model_parallel_loop(cls_model, cfg, idx, device_type: str = "cuda", num_epochs=1):
+    seed_everything(idx)
+
+    strategy = NLPDDPStrategy(
+        no_ddp_communication_hook=True,
+        gradient_as_bucket_view=cfg.gradient_as_bucket_view,
+        find_unused_parameters=False,
+    )
+
+    # init model parts
+    trainer = Trainer(
+        # as the first run is skipped, no need to run it long
+        max_epochs=num_epochs if idx > 0 else 1,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        enable_checkpointing=False,
+        accelerator="gpu" if device_type == "cuda" else "cpu",
+        devices=cfg.tensor_model_parallel_size*cfg.pipeline_model_parallel_size,
+        logger=False,
+        limit_val_batches=1,
+        use_distributed_sampler=False,
+        benchmark=False,
+        strategy=strategy,
+    )
+    model = cls_model(cfg, trainer)
+    trainer.fit(model)
+
+    return model._loss[-1], _hook_memory()
+
+
+@pytest.fixture()
+def model_cfg(test_data_dir):
+
+    model_cfg = {
+        'precision': 32,
+        'micro_batch_size': 1,
+        'global_batch_size': 2,
+        'tensor_model_parallel_size': 1,
+        'pipeline_model_parallel_size': 1,
+        'resume_from_checkpoint': None,
+        'encoder_seq_length': 512,
+        'max_position_embeddings': 512,
+        'num_layers': 1,
+        'hidden_size': 128,
+        'ffn_hidden_size': 512,
+        'num_attention_heads': 2,
+        'init_method_std': 0.02,
+        'hidden_dropout': 0.1,
+        'kv_channels': None,
+        'apply_query_key_layer_scaling': True,
+        'layernorm_epsilon': 1e-5,
+        'make_vocab_size_divisible_by': 128,
+        'pre_process': True,
+        'post_process': True,
+        'persist_layer_norm': True,
+        'gradient_as_bucket_view': True,
+        'tokenizer': {
+            'library': 'megatron',
+            'type': 'GPT2BPETokenizer',
+            'model': None,
+            'vocab_file': os.path.join(test_data_dir, 'nlp/gpt_vocab_merges/vocab.json'),
+            'merge_file': os.path.join(test_data_dir, 'nlp/gpt_vocab_merges/merges.txt'),
+            'delimiter': None,
+        },
+        'native_amp_init_scale': 4294967296,
+        'native_amp_growth_interval': 1000,
+        'hysteresis': 2,
+        'fp32_residual_connection': False,
+        'fp16_lm_cross_entropy': False,
+        'megatron_amp_O2': False,
+        'seed': 1234,
+        'use_cpu_initialization': False,
+        'onnx_safe': False,
+        'apex_transformer_log_level': 30,
+        'activations_checkpoint_method': None,
+        'activations_checkpoint_num_layers': 1,
+        'data': {
+            'data_impl': 'hf_wikitext wikitext-2-v1',
+            "data_prefix": [],
+            'splits_string': '900,50,50',
+            'seq_length': 512,
+            'skip_warmup': True,
+            'num_workers': 2,
+            'dataloader_type': 'single',
+            'reset_position_ids': False,
+            'reset_attention_mask': False,
+            'eod_mask_loss': False,
+        },
+        'optim': {
+            'name': 'fused_adam',
+            'lr': 2e-4,
+            'weight_decay': 0.01,
+            'betas': [0.9, 0.98],
+            'sched': {'name': 'CosineAnnealing', 'warmup_steps': 500, 'constant_steps': 50000, 'min_lr': 2e-5},
+        },
+    }
+    return model_cfg
