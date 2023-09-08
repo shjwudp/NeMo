@@ -1,5 +1,5 @@
-import os
 import itertools
+import os
 
 import torch
 from datasets import load_dataset
@@ -8,9 +8,7 @@ from nemo.core.classes import Dataset
 
 
 def fixed_seq_length_of_datasets(
-    datasets,
-    fixed_seq_length,
-    load_from_cache_file=False,
+    datasets, fixed_seq_length, load_from_cache_file=False,
 ):
     block_size = fixed_seq_length
 
@@ -26,13 +24,10 @@ def fixed_seq_length_of_datasets(
 
         # Cut off the excess tokens to align it with the group size.
         if total_length % block_size != 0:
-            input_ids = input_ids[:total_length - total_length % block_size]
-
+            input_ids = input_ids[: total_length - total_length % block_size]
 
         # Split by chunks of max_len.
-        result = { "input_ids": [
-            input_ids[i: i+block_size] for i in range(0, total_length, block_size)
-        ]}
+        result = {"input_ids": [input_ids[i : i + block_size] for i in range(0, total_length, block_size)]}
 
         return result
 
@@ -55,14 +50,8 @@ def fixed_seq_length_of_datasets(
 
 
 class WikitextDataset(Dataset):
-
     def __init__(
-        self,
-        tokenizer,
-        seq_length,
-        split="test",
-        name=None,
-        load_from_cache_file=True,
+        self, tokenizer, seq_length, split="test", name=None, load_from_cache_file=True,
     ):
         """HuggingFace's WikiText dataset.
         link: https://huggingface.co/datasets/wikitext
@@ -88,13 +77,11 @@ class WikitextDataset(Dataset):
             remove_columns=column_names,
             num_proc=os.cpu_count(),
             load_from_cache_file=load_from_cache_file,
-            desc="Running tokenizer on dataset", 
+            desc="Running tokenizer on dataset",
         )
 
         lm_dataset = fixed_seq_length_of_datasets(
-            tokenized_dataset,
-            seq_length,
-            load_from_cache_file=load_from_cache_file,
+            tokenized_dataset, seq_length, load_from_cache_file=load_from_cache_file,
         )
         self.dataset = lm_dataset
         self.attention_mask = torch.tril(torch.ones((self.seq_length, self.seq_length))).unsqueeze(0)
@@ -104,7 +91,7 @@ class WikitextDataset(Dataset):
 
     def __len__(self):
         return len(self.dataset)
-    
+
     def __getitem__(self, idx):
         item = self.dataset[idx]
         data_item = dict(

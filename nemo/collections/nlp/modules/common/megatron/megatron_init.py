@@ -20,9 +20,12 @@ import torch
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer.log_util import set_logging_level
-    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator, _reconfigure_microbatch_calculator
     import apex.transformer.pipeline_parallel.utils as apex_pp_utils
+    from apex.transformer.log_util import set_logging_level
+    from apex.transformer.pipeline_parallel.utils import (
+        _reconfigure_microbatch_calculator,
+        setup_microbatch_calculator,
+    )
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -126,14 +129,13 @@ def initialize_model_parallel_for_nemo(
                 rampup_batch_size=rampup_batch_size,
             )
         else:
-            apex_pp_utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR = \
-                apex_pp_utils.build_num_microbatches_calculator(
-                    rank=global_rank,
-                    rampup_batch_size=rampup_batch_size,
-                    global_batch_size=global_batch_size,
-                    micro_batch_size=micro_batch_size,
-                    data_parallel_size=app_state.data_parallel_size,
-                )
+            apex_pp_utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR = apex_pp_utils.build_num_microbatches_calculator(
+                rank=global_rank,
+                rampup_batch_size=rampup_batch_size,
+                global_batch_size=global_batch_size,
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=app_state.data_parallel_size,
+            )
 
     app_state._is_megatron_initialized = True
 
