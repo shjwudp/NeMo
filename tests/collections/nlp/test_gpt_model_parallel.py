@@ -1,5 +1,6 @@
 import os
 import pytest
+import time
 
 import torch
 from omegaconf import DictConfig, open_dict
@@ -7,7 +8,7 @@ from pytorch_lightning import seed_everything
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
-from megatron.core.parallel_state import destroy_model_parallel
+from megatron.core import parallel_state
 
 
 @pytest.mark.run_only_on('GPU')
@@ -55,6 +56,11 @@ class TestGPTModelParallel:
             atol=0.01, rtol=0.01,
         )
 
+    def teardown_torch_dist_group(self):
+        torch.distributed.destroy_process_group()
+        # sleep for a bit to avoid race conditions with new process group.
+        time.sleep(3)
+
 
 class TrainingBenchmark:
     def __init__(self, seed):
@@ -64,7 +70,8 @@ class TrainingBenchmark:
         torch.backends.cudnn.deterministic = True
  
     def __exit__(self, *args):
-        destroy_model_parallel()
+        torch.distributed.barrier()
+        parallel_state.destroy_model_parallel()
 
 
 @pytest.fixture()
