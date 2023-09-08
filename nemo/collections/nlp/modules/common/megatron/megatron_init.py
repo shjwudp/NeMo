@@ -22,7 +22,7 @@ from nemo.utils import AppState, logging
 try:
     from apex.transformer.log_util import set_logging_level
     from apex.transformer.microbatches import ConstantNumMicroBatches
-    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
+    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator, _reconfigure_microbatch_calculator
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -100,7 +100,6 @@ def initialize_model_parallel_for_nemo(
         virtual_pipeline_model_parallel_size_=virtual_pipeline_model_parallel_size,
         pipeline_model_parallel_split_rank_=pipeline_model_parallel_split_rank,
     )
-
     # update apex.transformer globals
     set_tensor_model_parallel_world_size(app_state.tensor_model_parallel_size)
     set_tensor_model_parallel_rank(app_state.tensor_model_parallel_rank)
@@ -127,14 +126,13 @@ def initialize_model_parallel_for_nemo(
                 rampup_batch_size=rampup_batch_size,
             )
         else:
-            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatches):
-                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.current_global_batch_size == global_batch_size
-                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.micro_batch_size == micro_batch_size
-                assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.num_micro_batches == global_batch_size // (
-                    micro_batch_size * app_state.data_parallel_size
-                )
-            else:
-                raise Exception("Microbatch calculator already initialized.")
+            _reconfigure_microbatch_calculator(
+                rank=global_rank,
+                global_batch_size=global_batch_size,
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=app_state.data_parallel_size,
+                rampup_batch_size=rampup_batch_size,
+            )
 
     app_state._is_megatron_initialized = True
 

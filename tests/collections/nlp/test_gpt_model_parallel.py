@@ -1,14 +1,77 @@
 import os
 import pytest
 
+import torch
+from omegaconf import DictConfig, open_dict
+from pytorch_lightning import seed_everything
+
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
+from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
+from megatron.core.parallel_state import destroy_model_parallel
+
+
+@pytest.mark.run_only_on('GPU')
+class TestGPTModelParallel:
+    DEFAULT_SEED = 1234
+    EXPECTED_LOSS = torch.tensor(0.5541142225265503)
+
+    @pytest.mark.unit
+    def test_tensor_parallel(self, gpt_cfg, trainer_cfg):
+        cfg = DictConfig({
+            "model": gpt_cfg,
+            "trainer": trainer_cfg,
+        })
+        with open_dict(cfg):
+            cfg.model.tensor_model_parallel_size = 2
+            cfg.trainer.devices = 2
+    
+        with TrainingBenchmark(self.DEFAULT_SEED):
+            trainer = MegatronTrainerBuilder(cfg).create_trainer()
+            gpt = MegatronGPTModel(cfg.model, trainer)
+
+            trainer.fit(gpt)
+
+        torch.testing.assert_close(gpt._loss, self.EXPECTED_LOSS, check_device=False)
+
+    @pytest.mark.unit
+    def test_sequence_parallel(self, gpt_cfg, trainer_cfg):
+        cfg = DictConfig({
+            "model": gpt_cfg,
+            "trainer": trainer_cfg,
+        })
+        with open_dict(cfg):
+            cfg.model.tensor_model_parallel_size = 2
+            cfg.model.sequence_parallel = True
+            cfg.trainer.devices = 2
+
+        with TrainingBenchmark(self.DEFAULT_SEED):
+            trainer = MegatronTrainerBuilder(cfg).create_trainer()
+            gpt = MegatronGPTModel(cfg.model, trainer)
+
+            trainer.fit(gpt)
+
+        torch.testing.assert_close(
+            gpt._loss, self.EXPECTED_LOSS, check_device=False,
+            atol=0.01, rtol=0.01,
+        )
+
+
+class TrainingBenchmark:
+    def __init__(self, seed):
+        seed_everything(seed)
+
+    def __enter__(self):
+        torch.backends.cudnn.deterministic = True
+ 
+    def __exit__(self, *args):
+        destroy_model_parallel()
 
 
 @pytest.fixture()
-def model_cfg(test_data_dir):
+def gpt_cfg(test_data_dir):
 
     model_cfg = {
-        'precision': 16,
+        'precision': 32,
         'micro_batch_size': 4,
         'global_batch_size': 8,
         'tensor_model_parallel_size': 1,
@@ -51,13 +114,12 @@ def model_cfg(test_data_dir):
         'activations_checkpoint_method': None,
         'activations_checkpoint_num_layers': 1,
         'data': {
-            'data_prefix': '???',
-            'index_mapping_dir': None,
-            'data_impl': 'mmap',
-            'splits_string': '900,50,50',
+            'data_impl': 'hf_wikitext wikitext-2-v1',
+            "data_prefix": [],
+            'splits_string': '8,1,1',
             'seq_length': 512,
             'skip_warmup': True,
-            'num_workers': 2,
+            'num_workers': 0,
             'dataloader_type': 'single',
             'reset_position_ids': False,
             'reset_attention_mask': False,
@@ -65,10 +127,10 @@ def model_cfg(test_data_dir):
         },
         'optim': {
             'name': 'fused_adam',
-            'lr': 2e-4,
+            'lr': 2e-3,
             'weight_decay': 0.01,
             'betas': [0.9, 0.98],
-            'sched': {'name': 'CosineAnnealing', 'warmup_steps': 500, 'constant_steps': 50000, 'min_lr': '2e-5'},
+            'sched': {'name': 'CosineAnnealing', 'warmup_steps': 10, 'constant_steps': 200, 'min_lr': 2e-4},
         },
     }
     return model_cfg
@@ -78,19 +140,17 @@ def model_cfg(test_data_dir):
 def trainer_cfg():
 
     trainer_cfg = {
-        'devices': 1,
+        'devices': 2,
         'num_nodes': 1,
         'accelerator': 'gpu',
-        'precision': 16,
+        'precision': 32,
         'logger': False,
         'enable_checkpointing': False,
         'use_distributed_sampler': False,
-        'max_epochs': 1000,
-        'max_steps': 100000,
-        'log_every_n_steps': 10,
+        'max_epochs': 1,
+        'max_steps': 500,
         'val_check_interval': 100,
-        'limit_val_batches': 50,
-        'limit_test_batches': 500,
+        'limit_val_batches': 1,
         'accumulate_grad_batches': 1,
         'gradient_clip_val': 1.0,
     }
