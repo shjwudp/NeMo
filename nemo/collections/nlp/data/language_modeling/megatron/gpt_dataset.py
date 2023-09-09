@@ -28,9 +28,9 @@ from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils imp
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import deallocate_indexed_dataset_memory
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import make_dataset as make_indexed_dataset
+from nemo.collections.nlp.data.language_modeling.wikitext_dataset import WikitextDataset
 from nemo.core import Dataset
 from nemo.utils import logging
-from nemo.collections.nlp.data.language_modeling.wikitext_dataset import WikitextDataset
 
 try:
     from megatron.core import parallel_state
@@ -79,7 +79,7 @@ def build_dataset(cfg, trainer, data_prefix, data_impl, num_samples, seq_length,
             dataset = _build_dataset(prefixes[i], datasets_num_samples[i])
             datasets.append(dataset)
         return BlendableDataset(datasets, weights, num_samples)
-    
+
 
 def build_train_valid_test_datasets(
     cfg,

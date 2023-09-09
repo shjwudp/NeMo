@@ -4,6 +4,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 
 try:
     from apex.normalization import MixedFusedRMSNorm
+
     HAVE_APEX = True
 
 except (ImportError, ModuleNotFoundError):
@@ -13,11 +14,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 def get_layer_norm(
-    ln_type,
-    hidden_size,
-    eps,
-    persist=False,
-    sequence_parallel=False,
+    ln_type, hidden_size, eps, persist=False, sequence_parallel=False,
 ):
     """Get the specified type from many layernorms.
 
@@ -28,17 +25,9 @@ def get_layer_norm(
     sequence_parallel: whether to use sequence parallelism
     """
     if ln_type == 'layernorm':
-        ln = get_fused_layer_norm(
-            hidden_size=hidden_size,
-            eps=eps,
-            persist_layer_norm=persist,
-        )
+        ln = get_fused_layer_norm(hidden_size=hidden_size, eps=eps, persist_layer_norm=persist,)
     elif ln_type == 'layernorm1p':
-        ln = LayerNorm1P(
-            hidden_size=hidden_size,
-            eps=eps,
-            sequence_parallel_enabled=sequence_parallel,
-        )
+        ln = LayerNorm1P(hidden_size=hidden_size, eps=eps, sequence_parallel_enabled=sequence_parallel,)
     elif ln_type == 'low_precision_layernorm':
         ln = LPLayerNorm(normalized_shape=hidden_size, eps=eps)
     elif ln_type == 'rmsnorm':

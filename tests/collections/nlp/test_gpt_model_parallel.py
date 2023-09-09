@@ -1,14 +1,14 @@
 import os
-import pytest
 import time
 
+import pytest
 import torch
+from megatron.core import parallel_state
 from omegaconf import DictConfig, open_dict
 from pytorch_lightning import seed_everything
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
-from megatron.core import parallel_state
 
 
 @pytest.mark.run_only_on('GPU')
@@ -18,14 +18,11 @@ class TestGPTModelParallel:
 
     @pytest.mark.unit
     def test_tensor_parallel(self, gpt_cfg, trainer_cfg):
-        cfg = DictConfig({
-            "model": gpt_cfg,
-            "trainer": trainer_cfg,
-        })
+        cfg = DictConfig({"model": gpt_cfg, "trainer": trainer_cfg,})
         with open_dict(cfg):
             cfg.model.tensor_model_parallel_size = 2
             cfg.trainer.devices = 2
-    
+
         with TrainingBenchmark(self.DEFAULT_SEED):
             trainer = MegatronTrainerBuilder(cfg).create_trainer()
             gpt = MegatronGPTModel(cfg.model, trainer)
@@ -36,10 +33,7 @@ class TestGPTModelParallel:
 
     @pytest.mark.unit
     def test_sequence_parallel(self, gpt_cfg, trainer_cfg):
-        cfg = DictConfig({
-            "model": gpt_cfg,
-            "trainer": trainer_cfg,
-        })
+        cfg = DictConfig({"model": gpt_cfg, "trainer": trainer_cfg,})
         with open_dict(cfg):
             cfg.model.tensor_model_parallel_size = 2
             cfg.model.sequence_parallel = True
@@ -52,8 +46,7 @@ class TestGPTModelParallel:
             trainer.fit(gpt)
 
         torch.testing.assert_close(
-            gpt._loss, self.EXPECTED_LOSS, check_device=False,
-            atol=0.01, rtol=0.01,
+            gpt._loss, self.EXPECTED_LOSS, check_device=False, atol=0.01, rtol=0.01,
         )
 
     def teardown_torch_dist_group(self):
@@ -68,7 +61,7 @@ class TrainingBenchmark:
 
     def __enter__(self):
         torch.backends.cudnn.deterministic = True
- 
+
     def __exit__(self, *args):
         torch.distributed.barrier()
         parallel_state.destroy_model_parallel()
