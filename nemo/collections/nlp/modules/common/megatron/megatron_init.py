@@ -21,7 +21,7 @@ from nemo.utils import AppState, logging
 
 try:
     from apex.transformer.log_util import set_logging_level
-    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator, _reconfigure_microbatch_calculator
+    from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
     import apex.transformer.pipeline_parallel.utils as apex_pp_utils
 
     HAVE_APEX = True

@@ -40,9 +40,11 @@ def get_layer_norm(
             sequence_parallel_enabled=sequence_parallel,
         )
     elif ln_type == 'low_precision_layernorm':
-        ln = LPLayerNorm(hidden_size=hidden_size, eps=eps)
+        ln = LPLayerNorm(normalized_shape=hidden_size, eps=eps)
     elif ln_type == 'rmsnorm':
         ln = MixedFusedRMSNorm(normalized_shape=hidden_size, eps=eps)
+    else:
+        raise Exception("Unsupported layer norm type: {}".format(ln_type))
 
     if sequence_parallel:
         # mark sequence parallelism in layer norm parameters
