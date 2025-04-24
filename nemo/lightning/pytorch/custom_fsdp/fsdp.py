@@ -4,21 +4,20 @@ import functools
 import logging
 from contextlib import contextmanager
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
-from megatron.core.distributed.data_parallel_base import _BaseDataParallel
-from megatron.core.fp8_utils import is_float8tensor
-from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.transformer_layer import TransformerLayer
-from megatron.core.utils import is_submodule, log_single_rank
 from torch.distributed import DeviceMesh
 from torch.utils._pytree import tree_flatten, tree_unflatten
 
-from nemo.lightning.pytorch.custom_fsdp.distributed_data_parallel_config import DistributedDataParallelConfig
-from nemo.lightning.pytorch.custom_fsdp.param_and_grad_buffer import (
+from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
+
+# FIXME: Remove the following dependencies
+from megatron.core.fp8_utils import is_float8tensor
+from megatron.core.utils import is_submodule
+
+from .param_and_grad_buffer import (
     AllGatherPipeline,
     BucketingPolicy,
     GradReducePipeline,
@@ -44,7 +43,7 @@ class TrainingState(Enum):
     IDLE = auto()
 
 
-class FullyShardedDataParallel(_BaseDataParallel):
+class FSDP(torch.nn.Module):
     """Fully Sharded Data Parallel training for MCore models.
 
     A distributed training wrapper that shards model parameters, gradients and optimizer
@@ -83,11 +82,10 @@ class FullyShardedDataParallel(_BaseDataParallel):
         disable_bucketing: If true, force assign all parameters to a single bucket. If false,
             use standard bucketing policy: assign parameters to smaller buckets and all-reduce
             per bucket.
-        device: Optional torch.device object to use for cFSDP bucket Tensors.
-        device_mesh: Optional DeviceMesh object. Used to blend DTensor parallelism with cFSDP parallelism.
-            If not provided, a new device mesh will be created from Megatron's parallel_state.
-            If provided, module expects device_mesh to have dp_cp or dp (if cp=1)
-                and expt_dp sub-meshes (if using expert data parallelism).
+        grad_comm_pgs: Optional GradCommProcessGroups object. If not provided, the default
+            process groups from parallel_state will be used. If provided, module expects
+            grad_comm_pgs to have dp_cp or dp (if cp=1) and
+            expt_dp attributes(if using expert data parallelism).
     Examples:
         >>> model = GPTModel(config)
         >>> model = FullyShardedDataParallel(
@@ -101,85 +99,64 @@ class FullyShardedDataParallel(_BaseDataParallel):
     # TODO: add hybrid FSDP (shard model states in a partial DP domain)
     def __init__(
         self,
-        config: TransformerConfig,
         ddp_config: DistributedDataParallelConfig,
         module: torch.nn.Module,
-        fsdp_unit_modules: Optional[List[torch.nn.Module]] = None,
+        fsdp_unit_modules: List[torch.nn.Module] = [],
         disable_bucketing: bool = False,
         device: Optional[torch.device] = None,
         device_mesh: Optional[DeviceMesh] = None,
+        dp_cp_group: Optional[torch.distributed.ProcessGroup] = None,
+        expt_dp_group: Optional[torch.distributed.ProcessGroup] = None,
+        context_parallel_size: int = 1,
+        calculate_per_token_loss: bool = False,
+        init_model_with_meta_device: bool = False,
     ):
-        super().__init__(config=config, module=module)
-        if has_config_logger_enabled(config):
-            log_config_to_disk(config, locals(), prefix=type(self).__name__)
-
+        super().__init__()
+        self.device = device if device else torch.device(f'cuda:{torch.cuda.current_device()}')
+        self.module = module.to(self.device)
         self.ddp_config = ddp_config
-        log_single_rank(
-            logger,
-            logging.INFO,
-            f'Setting up DistributedDataParallel with config {self.ddp_config}',
-        )
-
-        # Assign process groups based on device mesh or process group.
-        self.device = device if device else f"cuda:{torch.cuda.current_device()}"
-        # Move module to CUDA.
-        self.module = self.module.to(self.device)
         self.device_mesh = device_mesh
-        self.dp_cp_group = None
-        self.dp_cp_mesh = None
-        self.expt_dp_group = None
-        self.expt_dp_mesh = None
+        self.calculate_per_token_loss = calculate_per_token_loss
+        self.init_model_with_meta_device = init_model_with_meta_device
+
+        have_expert_parameters = False
+        for _, param in module.named_parameters():
+            if not getattr(param, 'allreduce', True):
+                have_expert_parameters = True
+                break
+
         if isinstance(self.device_mesh, DeviceMesh):
-            cp_size = getattr(config, 'context_parallel_size', 1)
+            cp_size = context_parallel_size
             if 'dp_cp' in self.device_mesh.mesh_dim_names:
                 self.dp_cp_group = self.device_mesh['dp_cp'].get_group()
-                self.dp_cp_mesh = self.device_mesh['dp_cp']
             elif 'dp' in self.device_mesh.mesh_dim_names and cp_size == 1:
                 self.dp_cp_group = self.device_mesh['dp'].get_group()
-                self.dp_cp_mesh = self.device_mesh['dp']
             else:
                 raise ValueError(
-                    "Required process group missing in device mesh: 'dp_cp' (or 'dp' when context_parallel_size=1)"
+                    "Required process group missing in device mesh: 'dp_cp' "
+                    "(or 'dp' when context_parallel_size=1)"
                 )
-
-            have_expert_parameters = False
-            for _, param in module.named_parameters():
-                if not getattr(param, 'allreduce', True):
-                    have_expert_parameters = True
-                    break
             if have_expert_parameters:
                 assert (
                     'expt_dp' in self.device_mesh.mesh_dim_names
                 ), 'Expert process group (expt_dp) is required when using expert parameters.'
                 self.expt_dp_group = self.device_mesh['expt_dp'].get_group()
-                self.expt_dp_mesh = self.device_mesh['expt_dp']
+            else:
+                self.expt_dp_group = None
         else:
-            # Retrieve process groups and build device mesh from Megatron parallel_state.
-            from megatron.core import parallel_state
-
-            self.dp_cp_group = parallel_state.get_data_parallel_group(
-                with_context_parallel=True, partial_data_parallel=False
-            )
-            self.expt_dp_group = parallel_state.get_expert_data_parallel_group()
-            self.dp_cp_mesh = DeviceMesh.from_group(
-                self.dp_cp_group, device_type=self.device.split(':')[0], mesh_dim_names=("dp_cp",)
-            )
-            self.expt_dp_mesh = DeviceMesh.from_group(
-                self.expt_dp_group, device_type=self.device.split(':')[0], mesh_dim_names=("expt_dp",)
-            )
+            assert dp_cp_group is not None, "Data parallel process group (dp_cp) is required when using custom FSDP."
+            self.dp_cp_group = dp_cp_group
+            if have_expert_parameters:
+                assert expt_dp_group is not None, "Expert process group (expt_dp) is required when using expert parameters."
+                self.expt_dp_group = expt_dp_group
+            else:
+                self.expt_dp_group = None
 
         self.bucket_size = self.ddp_config.bucket_size
         if disable_bucketing:
             self.bucket_size = None
 
-        self.param_to_bucket_group = {}
-        if fsdp_unit_modules is not None:
-            self.fsdp_unit_modules = fsdp_unit_modules
-        else:
-            if self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
-                self.fsdp_unit_modules = [TransformerLayer]
-            else:
-                self.fsdp_unit_modules = []
+        self.fsdp_unit_modules = fsdp_unit_modules
         self.main_weights = True
 
         # Determine if we should delay the gradient reduction.
@@ -187,27 +164,17 @@ class FullyShardedDataParallel(_BaseDataParallel):
             "no_shard",
             "optim",
         ]
-
         if self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
             assert self.ddp_config.overlap_param_gather
         if not self.is_delay_grad_reduce:
             assert self.ddp_config.overlap_grad_reduce
+
         self._init_fsdp_param_and_grad_buffer()
         self._register_fsdp_hooks(self.module)
-
-        # Delete references to weight_tensor if they exist since we don't want two parameter copies
-        # if we re-mapped parameters (which happens when we use the distributed optimizer).
-        # This is a temporary workaround around a TE bug that is fixed with
-        # https://github.com/NVIDIA/TransformerEngine/pull/719.
-        @torch.no_grad()
-        def unmap_weight_tensor(m):
-            if hasattr(m, 'weight_tensor'):
-                m.weight_tensor = None
-
-        self.module.apply(unmap_weight_tensor)
+        self.raw_param_data = {}
 
     def _init_fsdp_param_and_grad_buffer(self):
-        if self.config.calculate_per_token_loss:
+        if self.calculate_per_token_loss:
             # We don't need to scale the gradients in this case.
             gradient_scaling_factor = None
             expert_gradient_scaling_factor = None
@@ -238,9 +205,9 @@ class FullyShardedDataParallel(_BaseDataParallel):
             gradient_scaling_factor=gradient_scaling_factor,
             expert_gradient_scaling_factor=expert_gradient_scaling_factor,
             device=self.device,
-            device_mesh=self.dp_cp_mesh,
-            reset_parameters_for_meta_device_init_module=self.config.init_model_with_meta_device,
+            reset_parameters_for_meta_device_init_module=self.init_model_with_meta_device,
         )
+        self.param_and_grad_buffer
 
         self.side_stream_for_buffer_copy_and_grad_accum = torch.cuda.Stream()
 
@@ -361,14 +328,15 @@ class FullyShardedDataParallel(_BaseDataParallel):
                 "optim_grads",
                 "optim_grads_params",
             ]
-            if not getattr(param, 'grad_added_to_main_grad', False):
-                if overwrite_main_grad:
+            if overwrite_main_grad:
+                if not param.grad_added_to_main_grad:
                     if param.grad is not None:
                         param.main_grad.copy_(param.grad)
                         del param.grad
                     else:
                         param.main_grad.zero_()
-                else:
+            else:
+                if not param.grad_added_to_main_grad:
                     if param.grad is not None:
                         param.main_grad.add_(param.grad)
                         del param.grad
@@ -399,7 +367,9 @@ class FullyShardedDataParallel(_BaseDataParallel):
                     param_list, suggested_queue_capacity=self.suggested_RS_queue_capacity
                 )
 
-        def _pre_forward_param_unshard(module: nn.Module, args: Tuple[Any, ...], kwargs: Dict[str, Any]):
+        def _pre_forward_param_unshard(
+            module: nn.Module, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+        ):
             # Unshard the parameters before the forward pass.
             input_training_state = module._training_state
             fsdp_forward_prefetch = True
@@ -430,7 +400,6 @@ class FullyShardedDataParallel(_BaseDataParallel):
                 for param in param_list:
                     bucket_id = self.param_and_grad_buffer.param_to_param_group[param]
                     self.all_gather_pipeline.wait_bucket_ready(bucket_id)
-
             return args, kwargs
 
         def _register_post_backward_hook(
@@ -470,22 +439,6 @@ class FullyShardedDataParallel(_BaseDataParallel):
 
             return args, kwargs
 
-        fsdp_modules = []
-        for name, module in root_module.named_modules():
-            if any(is_submodule(module, fsdp_module) for fsdp_module in fsdp_modules):
-                continue
-
-            if isinstance(module, tuple(fsdp_unit_modules)):
-                fsdp_modules.append(module)
-
-            self.forward_pre_hooks[f'module {name} parameter unshard'] = module.register_forward_pre_hook(
-                _pre_forward_param_unshard, prepend=True, with_kwargs=True
-            )
-            self.forward_pre_hooks[f"module {name} register post-backward hook"] = module.register_forward_pre_hook(
-                functools.partial(_register_post_backward_hook, _post_backward),
-                with_kwargs=True,
-            )
-
         def _root_post_backward(*unused):
             # Make sure all the gradients are handled.
             for param in self._params_require_handle_grad:
@@ -506,10 +459,16 @@ class FullyShardedDataParallel(_BaseDataParallel):
             # Reset root_pre_backward_hook_issued flag.
             self._root_pre_backward_hook_issued = False
 
+            if torch.distributed.get_rank() == 0:
+                # print("Root post backward hook called.")
+                self.grad_reduce_pipeline.wait_for_previous_grad_reduce(0)
+
         def _pre_backward(module: nn.Module, *unused):
             module._training_state = TrainingState.PRE_BACKWARD
             if isinstance(module, tuple(fsdp_unit_modules)):
-                all_gather_module_parameters(module, prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER)
+                all_gather_module_parameters(
+                    module, prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER
+                )
 
         self._root_pre_backward_hook_issued = False
 
@@ -556,24 +515,68 @@ class FullyShardedDataParallel(_BaseDataParallel):
         def _release_module_fp8_transpose_cache(module: nn.Module, *unused):
             release_params_fp8_transpose_cache(module.parameters(recurse=False))
 
-        if len(fsdp_unit_modules) != 0:
-            fsdp_modules = []
-            for name, module in root_module.named_modules():
-                if any(is_submodule(module, fsdp_module) for fsdp_module in fsdp_modules):
-                    continue
+        def create_custom_backward_hook(module, custom_backward_handler):
+            def forward_hook(_module, inputs, output):
+                output_list = []
 
-                if isinstance(module, tuple(fsdp_unit_modules)):
-                    fsdp_modules.append(module)
-                    self.forward_hooks[f"release module {name} parameters"] = module.register_forward_hook(
-                        _post_forward, prepend=False
-                    )
-                    self.backward_pre_hooks[f"all-gather module {name} parameters"] = (
-                        module.register_full_backward_pre_hook(_pre_backward)
-                    )
-                elif not self.ddp_config.keep_fp8_transpose_cache_when_using_custom_fsdp:
-                    self.forward_hooks[f"remove module {name} fp8 transpose cache"] = module.register_forward_hook(
+                # Register backward hook on the output tensor(s)
+                if isinstance(output, torch.Tensor):
+                    output_list = [output]
+                elif isinstance(output, (tuple, list)):
+                    output_list = [t for t in output if isinstance(t, torch.Tensor)]
+
+                torch.autograd.graph.register_multi_grad_hook(
+                    output_list, lambda grads: custom_backward_handler(_module, grads),
+                    mode='any',
+                )
+                return output
+
+            return module.register_forward_hook(forward_hook)
+
+        fsdp_modules = []
+        for name, module in root_module.named_modules():
+            # Skip if the module is already registered in fsdp_modules.
+            if any(is_submodule(module, fsdp_module) for fsdp_module in fsdp_modules):
+                continue
+
+            # Register the forward pre-hook to unshard parameters before the forward pass.
+            self.forward_pre_hooks[f'module {name} parameter unshard'] = (
+                module.register_forward_pre_hook(
+                    _pre_forward_param_unshard, prepend=True, with_kwargs=True
+                )
+            )
+
+            if isinstance(module, tuple(fsdp_unit_modules)):
+                fsdp_modules.append(module)
+                # Register the forward post-hook to reshard FSDP unit module parameters
+                # after the forward pass.
+                self.forward_hooks[f"release module {name} parameters"] = (
+                    module.register_forward_hook(_post_forward, prepend=False)
+                )
+
+                # Register the backward pre-hook to unshard FSDP unit module parameters
+                # before the backward pass.
+                self.backward_pre_hooks[f"all-gather module {name} parameters"] = (
+                    create_custom_backward_hook(module, _pre_backward)
+                )
+            elif not self.ddp_config.keep_fp8_transpose_cache_when_using_custom_fsdp and self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
+                # Register the forward post-hook to release FP8 transpose cache
+                # after the forward pass for non-FSDP unit modules.
+                # NOTE: We only need to remove the transpose cache in parameter
+                # sharding strategy.
+                self.forward_hooks[f"remove module {name} fp8 transpose cache"] = (
+                    module.register_forward_hook(
                         _release_module_fp8_transpose_cache, prepend=False
                     )
+                )
+
+            # Register the backward post-hook to release parameters after the backward pass.
+            self.forward_pre_hooks[f"module {name} register post-backward hook"] = (
+                module.register_forward_pre_hook(
+                    functools.partial(_register_post_backward_hook, _post_backward),
+                    with_kwargs=True,
+                )
+            )
 
         # Registering all models with all parameters is to handle some special cases
         # where the forward function of root_module is not called, but the forward
@@ -582,10 +585,10 @@ class FullyShardedDataParallel(_BaseDataParallel):
             if len(list(module.parameters())) != len(list(root_module.parameters())):
                 continue
 
-            self.backward_pre_hooks[f"{name} _root_pre_backward"] = module.register_full_backward_pre_hook(
-                _root_pre_backward
+            self.backward_pre_hooks[f"{name} _root_pre_backward"] = (
+                create_custom_backward_hook(module, _root_pre_backward)
             )
-        self._root_pre_backward_hook_handle = root_module.register_full_backward_pre_hook(_root_pre_backward)
+        self._root_pre_backward_hook_handle = create_custom_backward_hook(module, _root_pre_backward)
 
     @contextmanager
     def no_sync(self):
@@ -621,7 +624,9 @@ class FullyShardedDataParallel(_BaseDataParallel):
         else:
             self.all_gather_pipeline.reset()
             for bucket_id in range(self.all_gather_pipeline.num_buckets):
-                self.all_gather_pipeline.all_gather_bucket_and_set_items(bucket_id=bucket_id, async_op=True)
+                self.all_gather_pipeline.all_gather_bucket_and_set_items(
+                    bucket_id=bucket_id, async_op=True
+                )
                 group = self.param_and_grad_buffer.parameter_groups[bucket_id]
                 if group.model_weight_buffer is None:
                     continue
@@ -644,7 +649,9 @@ class FullyShardedDataParallel(_BaseDataParallel):
         """
         if not self.ddp_config.overlap_grad_reduce:
             if self.data_parallel_sharding_strategy == "no_shard":
-                self.param_and_grad_buffer.all_reduce_gradients(async_op=self.ddp_config.overlap_grad_reduce)
+                self.param_and_grad_buffer.all_reduce_gradients(
+                    async_op=self.ddp_config.overlap_grad_reduce
+                )
             else:
                 self.param_and_grad_buffer.reduce_scatter_gradients()
 
@@ -667,6 +674,17 @@ class FullyShardedDataParallel(_BaseDataParallel):
 
         if self.ddp_config.overlap_param_gather:
             self.all_gather_pipeline.reset()
+
+        optimizer_named_parameters = dict(self.optimizer_named_parameters())
+        self.raw_param_data = {}
+        for name, param in self.module.named_parameters():
+            if name in optimizer_named_parameters:
+                self.raw_param_data[name] = param.data
+                param.data = optimizer_named_parameters[name].data
+                param.grad = optimizer_named_parameters[name].grad
+            else:
+                param.data = torch.empty()
+                param.grad = None
 
     def optimizer_named_parameters(self) -> List[Tuple[str, torch.Tensor]]:
         """
@@ -710,42 +728,44 @@ class FullyShardedDataParallel(_BaseDataParallel):
                 group=data_parallel_group,
             )
 
-    def load_state_dict(self, state_dict, strict=True):
+    def _register_state_dict_hooks(self):
         """
-        Copies parameters and buffers from state_dict into the wrapped module and its
-        descendants. If strict is True, then the keys of state_dict must exactly match
-        the keys returned by this module’s state_dict() function.
+        Register state_dict hooks to convert parameters to DTensor.
         """
-        if self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
-            # make a copy of the state_dict to avoid modifying the input state_dict
-            state_dict = state_dict.copy()
-            state_dict_extra_states = {}
-            for key in list(state_dict.keys()):
-                if key.endswith("_extra_state"):
-                    state_dict_extra_states[key] = state_dict[key]
-                    del state_dict[key]
-            self.module.load_state_dict(state_dict_extra_states, strict=False)
+        param_to_dparam = {}
+        for param_group in self.param_and_grad_buffer.parameter_groups.values():
+            wbuf = param_group.model_weight_buffer
+            for param, dtensor_param in zip(wbuf.params, wbuf.dtensor_params):
+                param_to_dparam[param] = dtensor_param
+        for name, param in self.module.named_parameters():
+            dtensor_param = param_to_dparam.get(param)
 
-            prefix = "module."
-            buffer = self.param_and_grad_buffer
-            for param_groups in buffer.parameter_groups:
-                wbuf = param_groups.model_weight_buffer
-                for model_param in wbuf.params:
-                    if is_float8tensor(model_param):
-                        fp8_meta = model_param._fp8_meta['scaling_fwd']
-                        fp8_meta_index = model_param._fp8_meta_index
-                        model_param._scale_inv.copy_(fp8_meta.scale_inv[fp8_meta_index])
+    def parameters(self, *args, **kwargs):
+        """
+        Method to pass FSDP managed parameters for the module.
+        """
+        return [param for name, param in self.optimizer_named_parameters()]
 
-                    param_name = f"{buffer.param_to_name[model_param]}"[len(prefix) :]
-                    if param_name in state_dict:
-                        if wbuf and wbuf.is_data_distributed:
-                            model_param.fully_shard_param_local_shard.data.copy_(state_dict[param_name])
-                        else:
-                            model_param.data.copy_(state_dict[param_name])
-                        del state_dict[param_name]
-            self.module.load_state_dict(state_dict, strict=False)
-            return
-        self.module.load_state_dict(state_dict, strict=strict)
+    def named_parameters(self, *args, **kwargs):
+        """
+        Method to pass FSDP managed parameters for the module.
+        """
+        return self.optimizer_named_parameters()
+
+    def forward(self, *inputs, **kwargs):
+        """
+        Wrapped forward pass of the model managed by FSDP.
+        """
+        if len(self.raw_param_data) > 0:
+            for name, param in self.module.named_parameters():
+                if name in self.raw_param_data:
+                    param.data = self.raw_param_data[name]
+            self.raw_param_data = {}
+
+        with torch.autograd.profiler.record_function("CustomFSDP.forward"):
+            # Call the forward pass of the wrapped module.
+            output = self.module.forward(*inputs, **kwargs)
+            return output
 
 
 class RegisterFSDPBackwardFunction(torch.autograd.Function):

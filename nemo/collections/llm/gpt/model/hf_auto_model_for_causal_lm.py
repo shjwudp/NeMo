@@ -21,6 +21,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
+from nemo.lightning.pytorch.custom_fsdp import FSDP
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.automodel.loss.linear_ce import HAVE_LINEAR_LOSS_CE, fused_linear_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
@@ -392,12 +393,9 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         tps = self.n_tok / time_delta
         self.n_tok = 0
 
-        try:
+        if isinstance(self.model, FSDP):
+            # If the model uses custom FSDP2, wait for all sharded gradients to be reduced and unsharded.
             self.model.finish_grad_sync()
-            # if torch.distributed.get_rank() == 0:
-            #     print("Finished grad sync")
-        except:
-            pass
 
         # reduce across ranks
         is_ddp = isinstance(self.trainer.strategy, pl.strategies.DDPStrategy)
@@ -407,7 +405,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 group = dist.group.WORLD  # Default DDP process group
             else:
                 # Use the flattened DP / CP device mesh for loss reduction
-                # if it exists (CP > 1), else default to the data parallel mesh.
+                # if it exists, else default to the data parallel mesh.
                 group = device_mesh[
                     (
                         "dp_cp"

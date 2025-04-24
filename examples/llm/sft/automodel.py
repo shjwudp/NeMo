@@ -17,13 +17,13 @@ import tempfile
 import fiddle as fdl
 import lightning.pytorch as pl
 
+from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from nemo import lightning as nl
 from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
 from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
-from nemo.lightning.pytorch.custom_fsdp.distributed_data_parallel_config import DistributedDataParallelConfig
 
 # Run this example with torchrun, for example:
 # torchrun --nproc-per-node=8 \

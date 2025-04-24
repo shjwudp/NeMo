@@ -33,8 +33,8 @@ from lightning.pytorch.utilities.types import STEP_OUTPUT
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel
 from typing_extensions import override
 
+from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from nemo.lightning import io
-from nemo.lightning.pytorch.custom_fsdp.distributed_data_parallel_config import DistributedDataParallelConfig
 from nemo.lightning.pytorch.strategies.utils import (
     _destroy_dist_connection,
     ckpt_to_dir,
@@ -248,8 +248,13 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             mesh_dim_names=mesh_dim_names,
         )
 
-        # Context parallelism loss reduction mesh. Remember to divide out CP size in tokens per second throughput.
-        self._device_mesh[("data_parallel", "context_parallel")]._flatten(mesh_dim_name="dp_cp")
+        # Construct sharding and reduction meshes for specific configurations.
+        # Replace existing mesh strategies if a custom mesh design is provided.
+        # WARNING: ADDING MESHES INCREASES MEMORY USAGE. Use device meshes for
+        # multiple dimensions of parallelism if possible.
+        if self._device_mesh["context_parallel"].size() > 1:
+            # Context parallelism loss reduction mesh. Remember to divide out CP size in tokens per second throughput.
+            self._device_mesh[("data_parallel", "context_parallel")]._flatten(mesh_dim_name="dp_cp")
 
         self.lightning_module._device_mesh = self._device_mesh
 
@@ -280,6 +285,8 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             self.parallelized = True
             if self.cfsdp2 and self.cfsdp2_unit_modules:  # ... cfsdp2_unit_modules is not None and not an empty list
                 # Use custom FSDP2.
+                # TODO(@cspades): Remove this guard when we confirm support for DTensor-based TP and CP.
+                assert self._tensor_parallel_size == 1 and self.context_parallel_size == 1, "Support for TP>1 and CP>1 when using CFSDP2 is not yet implemented."
                 self.lightning_module.model = custom_fsdp2_strategy_parallelize(
                     self.lightning_module.model,
                     device_mesh=self._device_mesh,
@@ -400,6 +407,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         assert self.model is not None
 
         if self.cfsdp2:
+            # If custom FSDP2 is enabled, zero out the gradient buffer before the next forward-backward step.
             self.lightning_module.model.zero_grad_buffer()
 
         if self.context_parallel_size > 1:
@@ -409,6 +417,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             loss = self.lightning_module.training_step(batch, batch_idx)
 
         if self.cfsdp2:
+            # If custom FSDP2 is enabled, copy the main high-precision buffer weights to the
+            # model lower-precision buffer weights after the forward pass in preparation
+            # for the high-precision backwards pass.
             self.lightning_module.model.param_and_grad_buffer.copy_main_weights_to_model_weights()
 
         self.lightning_module.log(
