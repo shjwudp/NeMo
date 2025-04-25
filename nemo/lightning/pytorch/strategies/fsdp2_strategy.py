@@ -30,10 +30,10 @@ from lightning.fabric.utilities.seed import reset_seed
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as PLModelParallelStrategy
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
+from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel
 from typing_extensions import override
 
-from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import (
     _destroy_dist_connection,
@@ -286,7 +286,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             if self.cfsdp2 and self.cfsdp2_unit_modules:  # ... cfsdp2_unit_modules is not None and not an empty list
                 # Use custom FSDP2.
                 # TODO(@cspades): Remove this guard when we confirm support for DTensor-based TP and CP.
-                assert self._tensor_parallel_size == 1 and self.context_parallel_size == 1, "Support for TP>1 and CP>1 when using CFSDP2 is not yet implemented."
+                assert (
+                    self._tensor_parallel_size == 1 and self.context_parallel_size == 1
+                ), "Support for TP>1 and CP>1 when using CFSDP2 is not yet implemented."
                 self.lightning_module.model = custom_fsdp2_strategy_parallelize(
                     self.lightning_module.model,
                     device_mesh=self._device_mesh,

@@ -229,7 +229,13 @@ def main():
         help='Use Sequence Parallelism; to be used with fsdp2 and tp_size > 1',
     )
     parser.add_argument('--cfsdp2', action='store_true', help='Use custom FSDP2.')
-    parser.add_argument('--cfsdp2-unit-modules', type=str, nargs='+', default=None, help='Set of custom FSDP2 unit module classes to use for sharding. Required for custom FSDP2.')
+    parser.add_argument(
+        '--cfsdp2-unit-modules',
+        type=str,
+        nargs='+',
+        default=None,
+        help='Set of custom FSDP2 unit module classes to use for sharding. Required for custom FSDP2.',
+    )
     parser.add_argument('--use-te-optimizer', action='store_true', help='Use TE optimizer')
     parser.add_argument('--grad-clip', type=float, default=1.0, help='Grad clip value')
     parser.add_argument(

@@ -8,14 +8,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from torch.distributed import DeviceMesh
-from torch.utils._pytree import tree_flatten, tree_unflatten
-
 from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 
 # FIXME: Remove the following dependencies
 from megatron.core.fp8_utils import is_float8tensor
 from megatron.core.utils import is_submodule
+from torch.distributed import DeviceMesh
+from torch.utils._pytree import tree_flatten, tree_unflatten
 
 from .param_and_grad_buffer import (
     AllGatherPipeline,
@@ -133,8 +132,7 @@ class FSDP(torch.nn.Module):
                 self.dp_cp_group = self.device_mesh['dp'].get_group()
             else:
                 raise ValueError(
-                    "Required process group missing in device mesh: 'dp_cp' "
-                    "(or 'dp' when context_parallel_size=1)"
+                    "Required process group missing in device mesh: 'dp_cp' " "(or 'dp' when context_parallel_size=1)"
                 )
             if have_expert_parameters:
                 assert (
@@ -147,7 +145,9 @@ class FSDP(torch.nn.Module):
             assert dp_cp_group is not None, "Data parallel process group (dp_cp) is required when using custom FSDP."
             self.dp_cp_group = dp_cp_group
             if have_expert_parameters:
-                assert expt_dp_group is not None, "Expert process group (expt_dp) is required when using expert parameters."
+                assert (
+                    expt_dp_group is not None
+                ), "Expert process group (expt_dp) is required when using expert parameters."
                 self.expt_dp_group = expt_dp_group
             else:
                 self.expt_dp_group = None
@@ -207,7 +207,6 @@ class FSDP(torch.nn.Module):
             device=self.device,
             reset_parameters_for_meta_device_init_module=self.init_model_with_meta_device,
         )
-        self.param_and_grad_buffer
 
         self.side_stream_for_buffer_copy_and_grad_accum = torch.cuda.Stream()
 
@@ -367,9 +366,7 @@ class FSDP(torch.nn.Module):
                     param_list, suggested_queue_capacity=self.suggested_RS_queue_capacity
                 )
 
-        def _pre_forward_param_unshard(
-            module: nn.Module, args: Tuple[Any, ...], kwargs: Dict[str, Any]
-        ):
+        def _pre_forward_param_unshard(module: nn.Module, args: Tuple[Any, ...], kwargs: Dict[str, Any]):
             # Unshard the parameters before the forward pass.
             input_training_state = module._training_state
             fsdp_forward_prefetch = True
@@ -466,9 +463,7 @@ class FSDP(torch.nn.Module):
         def _pre_backward(module: nn.Module, *unused):
             module._training_state = TrainingState.PRE_BACKWARD
             if isinstance(module, tuple(fsdp_unit_modules)):
-                all_gather_module_parameters(
-                    module, prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER
-                )
+                all_gather_module_parameters(module, prefetch_order=PrefetchOrder.BACKWARD_PASS_ORDER)
 
         self._root_pre_backward_hook_issued = False
 
@@ -526,7 +521,8 @@ class FSDP(torch.nn.Module):
                     output_list = [t for t in output if isinstance(t, torch.Tensor)]
 
                 torch.autograd.graph.register_multi_grad_hook(
-                    output_list, lambda grads: custom_backward_handler(_module, grads),
+                    output_list,
+                    lambda grads: custom_backward_handler(_module, grads),
                     mode='any',
                 )
                 return output
@@ -540,42 +536,39 @@ class FSDP(torch.nn.Module):
                 continue
 
             # Register the forward pre-hook to unshard parameters before the forward pass.
-            self.forward_pre_hooks[f'module {name} parameter unshard'] = (
-                module.register_forward_pre_hook(
-                    _pre_forward_param_unshard, prepend=True, with_kwargs=True
-                )
+            self.forward_pre_hooks[f'module {name} parameter unshard'] = module.register_forward_pre_hook(
+                _pre_forward_param_unshard, prepend=True, with_kwargs=True
             )
 
             if isinstance(module, tuple(fsdp_unit_modules)):
                 fsdp_modules.append(module)
                 # Register the forward post-hook to reshard FSDP unit module parameters
                 # after the forward pass.
-                self.forward_hooks[f"release module {name} parameters"] = (
-                    module.register_forward_hook(_post_forward, prepend=False)
+                self.forward_hooks[f"release module {name} parameters"] = module.register_forward_hook(
+                    _post_forward, prepend=False
                 )
 
                 # Register the backward pre-hook to unshard FSDP unit module parameters
                 # before the backward pass.
-                self.backward_pre_hooks[f"all-gather module {name} parameters"] = (
-                    create_custom_backward_hook(module, _pre_backward)
+                self.backward_pre_hooks[f"all-gather module {name} parameters"] = create_custom_backward_hook(
+                    module, _pre_backward
                 )
-            elif not self.ddp_config.keep_fp8_transpose_cache_when_using_custom_fsdp and self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params":
+            elif (
+                not self.ddp_config.keep_fp8_transpose_cache_when_using_custom_fsdp
+                and self.ddp_config.data_parallel_sharding_strategy == "optim_grads_params"
+            ):
                 # Register the forward post-hook to release FP8 transpose cache
                 # after the forward pass for non-FSDP unit modules.
                 # NOTE: We only need to remove the transpose cache in parameter
                 # sharding strategy.
-                self.forward_hooks[f"remove module {name} fp8 transpose cache"] = (
-                    module.register_forward_hook(
-                        _release_module_fp8_transpose_cache, prepend=False
-                    )
+                self.forward_hooks[f"remove module {name} fp8 transpose cache"] = module.register_forward_hook(
+                    _release_module_fp8_transpose_cache, prepend=False
                 )
 
             # Register the backward post-hook to release parameters after the backward pass.
-            self.forward_pre_hooks[f"module {name} register post-backward hook"] = (
-                module.register_forward_pre_hook(
-                    functools.partial(_register_post_backward_hook, _post_backward),
-                    with_kwargs=True,
-                )
+            self.forward_pre_hooks[f"module {name} register post-backward hook"] = module.register_forward_pre_hook(
+                functools.partial(_register_post_backward_hook, _post_backward),
+                with_kwargs=True,
             )
 
         # Registering all models with all parameters is to handle some special cases
@@ -585,8 +578,8 @@ class FSDP(torch.nn.Module):
             if len(list(module.parameters())) != len(list(root_module.parameters())):
                 continue
 
-            self.backward_pre_hooks[f"{name} _root_pre_backward"] = (
-                create_custom_backward_hook(module, _root_pre_backward)
+            self.backward_pre_hooks[f"{name} _root_pre_backward"] = create_custom_backward_hook(
+                module, _root_pre_backward
             )
         self._root_pre_backward_hook_handle = create_custom_backward_hook(module, _root_pre_backward)
 
@@ -624,9 +617,7 @@ class FSDP(torch.nn.Module):
         else:
             self.all_gather_pipeline.reset()
             for bucket_id in range(self.all_gather_pipeline.num_buckets):
-                self.all_gather_pipeline.all_gather_bucket_and_set_items(
-                    bucket_id=bucket_id, async_op=True
-                )
+                self.all_gather_pipeline.all_gather_bucket_and_set_items(bucket_id=bucket_id, async_op=True)
                 group = self.param_and_grad_buffer.parameter_groups[bucket_id]
                 if group.model_weight_buffer is None:
                     continue
@@ -649,9 +640,7 @@ class FSDP(torch.nn.Module):
         """
         if not self.ddp_config.overlap_grad_reduce:
             if self.data_parallel_sharding_strategy == "no_shard":
-                self.param_and_grad_buffer.all_reduce_gradients(
-                    async_op=self.ddp_config.overlap_grad_reduce
-                )
+                self.param_and_grad_buffer.all_reduce_gradients(async_op=self.ddp_config.overlap_grad_reduce)
             else:
                 self.param_and_grad_buffer.reduce_scatter_gradients()
 

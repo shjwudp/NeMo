@@ -21,12 +21,12 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
-from nemo.lightning.pytorch.custom_fsdp import FSDP
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.automodel.loss.linear_ce import HAVE_LINEAR_LOSS_CE, fused_linear_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
+from nemo.lightning.pytorch.custom_fsdp import FSDP
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
 

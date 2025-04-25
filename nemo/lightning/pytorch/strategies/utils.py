@@ -27,7 +27,6 @@ from lightning.pytorch.callbacks import TQDMProgressBar
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.mapping import ShardedBase, ShardedObject, ShardedTensor
 from megatron.core.dist_checkpointing.strategies.torch import sharded_tensor_to_torch_sharded_tensor
-from nemo.lightning.pytorch.custom_fsdp import FSDP
 from megatron.core.distributed.distributed_data_parallel_config import DistributedDataParallelConfig
 from megatron.core.transformer.utils import _get_extra_state_offsets
 from torch import Tensor, nn
@@ -38,6 +37,7 @@ from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, 
 
 from nemo.lightning import _strategy_lib
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ProgressPrinter
+from nemo.lightning.pytorch.custom_fsdp import FSDP
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.import_utils import safe_import_from
 
@@ -563,9 +563,11 @@ def custom_fsdp2_strategy_parallelize(
 
     # Fully-sharded data parallel device mesh (dp or dp_cp) for custom FSDP2.
     dp_mesh = device_mesh[
-        "dp_cp"
-        if device_mesh.mesh_dim_names is not None and "dp_cp" in device_mesh.mesh_dim_names
-        else "data_parallel"
+        (
+            "dp_cp"
+            if device_mesh.mesh_dim_names is not None and "dp_cp" in device_mesh.mesh_dim_names
+            else "data_parallel"
+        )
     ]
     tp_mesh = device_mesh["tensor_parallel"]
     if dp_mesh.size() > 1:
