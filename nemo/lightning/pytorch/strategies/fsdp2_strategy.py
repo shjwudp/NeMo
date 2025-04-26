@@ -118,7 +118,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self.checkpoint = None
         self.parallelized = False
         self.cfsdp2 = cfsdp2
-        self.cfsdp2_unit_modules = cfsdp2_unit_modules
+        self.cfsdp2_unit_modules = cfsdp2_unit_modules if cfsdp2_unit_modules is not None else []
         self.ddp_config = ddp_config
         self.mp_policy = mp_policy
         if self.mp_policy is None:
@@ -283,7 +283,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         if not self.parallelized:
             # Mark model parallelized.
             self.parallelized = True
-            if self.cfsdp2 and self.cfsdp2_unit_modules:  # ... cfsdp2_unit_modules is not None and not an empty list
+            if self.cfsdp2:
                 # Use custom FSDP2.
                 # TODO(@cspades): Remove this guard when we confirm support for DTensor-based TP and CP.
                 assert (
@@ -419,9 +419,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             loss = self.lightning_module.training_step(batch, batch_idx)
 
         if self.cfsdp2:
-            # If custom FSDP2 is enabled, copy the main high-precision buffer weights to the
-            # model lower-precision buffer weights after the forward pass in preparation
-            # for the high-precision backwards pass.
+            # If custom FSDP2 is configured with "optim" (optimizer state / high-precision model weight sharding),
+            # then the optimizer step will be applied to the main high-precision model weights. Update the model
+            # weights with the optimized model weights after the optimizer step (within the training step)
             self.lightning_module.model.param_and_grad_buffer.copy_main_weights_to_model_weights()
 
         self.lightning_module.log(

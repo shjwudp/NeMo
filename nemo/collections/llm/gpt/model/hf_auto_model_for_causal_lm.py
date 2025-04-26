@@ -395,6 +395,8 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         if isinstance(self.model, FSDP):
             # If the model uses custom FSDP2, wait for all sharded gradients to be reduced and unsharded.
+            # Necessary because the post-backward reduce-scatter is asynchronous, so gradients and backward
+            # computations are concurrent, but the gradients of the final layer may not be available yet.
             self.model.finish_grad_sync()
 
         # reduce across ranks
