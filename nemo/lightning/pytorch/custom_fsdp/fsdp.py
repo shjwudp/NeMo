@@ -569,6 +569,7 @@ class FSDP(torch.nn.Module):
             Creates a custom backward hook via attaching a gradient-triggered hook
             to the output tensor(s) of a module during a post-forward hook.
             """
+
             def forward_hook(_module, inputs, output):
                 output_list = []
 
@@ -613,7 +614,7 @@ class FSDP(torch.nn.Module):
                 )
 
                 # Register the backward pre-hook to unshard FSDP unit module parameters
-                # immediately before the backward pass via attaching a gradient-triggered 
+                # immediately before the backward pass via attaching a gradient-triggered
                 # hook to the output tensor(s) of a module during a post-forward hook.
                 self.backward_pre_hooks[f"all-gather module {name} parameters"] = create_custom_backward_hook(
                     module, _pre_backward

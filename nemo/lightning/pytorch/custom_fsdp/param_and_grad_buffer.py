@@ -168,7 +168,7 @@ def build_data_parallel_buffer_index(
         # be stored in the tensor data buffer in a bucket.
         item_index_map.append(
             TensorItemIndex(
-                # Global data index of the starting idx of this parameter 
+                # Global data index of the starting idx of this parameter
                 # = running global data index + updated bucket size - the parameter size.
                 global_data_index=data_index + bucket_size - item.numel(),
                 # Number of tensor elements in the parameter.
@@ -219,10 +219,10 @@ def build_data_parallel_buffer_index(
         # buffer shard in the global bucket.
         shard_bucket_index = ShardBucketIndex(
             bucket_id=bucket_id,
-            global_data_index=global_data_index,    # Location of the buffer shard in the global bucket.
-            local_data_index=0,                     # When the buffer is sharded, the local index of the data in this shard starts at 0.
-            bucket_data_index=bucket_data_index,    # Location of the buffer shard relative to the global starting index of the bucket.
-            size=shard_size,                        # Size of the bucket shard.
+            global_data_index=global_data_index,  # Location of the buffer shard in the global bucket.
+            local_data_index=0,  # When the buffer is sharded, the local index of the data in this shard starts at 0.
+            bucket_data_index=bucket_data_index,  # Location of the buffer shard relative to the global starting index of the bucket.
+            size=shard_size,  # Size of the bucket shard.
         )
     else:
         # Virtual sharding for bijections with other sharded buffers. But the buffer
@@ -608,7 +608,7 @@ class DataParallelBuffer:
         Return the coordinates of the slice of the item that is contained
         in this buffer shard. In other words, this returns the coordinates
         of all of the data in this item that is stored in this shard.
-        
+
         Maps to the global coordinates of the item in the bucket when added to
         the starting coordinate of the item in the bucket, and maps to the local
         coordinates of the item in the shard when added to the difference between
@@ -685,7 +685,7 @@ class DataParallelBuffer:
         Return the local coordinates of the slice of this buffer's shard that
         contains the item with the given ID. In other words, this returns the
         coordinates of all of the data in this shard associated with the item.
-        
+
         Maps to the global coordinates of the item in the bucket when added to
         the starting coordinate of the shard in the global bucket, and maps to
         the coordinates of the item contained in the shard when added to the
@@ -1017,7 +1017,7 @@ def _get_parameter_groups(
         for bucket_group in bucket_group_map.values():
             for bucket_id in bucket_group:
                 bucket_group_of_bucket[bucket_id] = bucket_group
- 
+
     # Return the full list of split bucket / parameter groups, the mapping from parameters to their bucket group ID,
     # and the mapping from bucket ID to the full group of bucket IDs that are NCCL-aggregated with this bucket ID.
     return (bucket_groups, param_to_param_group, bucket_group_of_bucket)
@@ -1179,7 +1179,7 @@ class ParamAndGradBuffer:
         preserve_fp32_weights = self.preserve_fp32_weights
         grad_reduce_in_fp32 = self.grad_reduce_in_fp32
         buffer_size = {torch.float32: 0, torch.float16: 0, torch.bfloat16: 0, "float8": 0}
-        
+
         # For all bucket groups (partitioned parameter groups)...
         for group_id, group in enumerate(self.parameter_groups):
             dp_group = self.data_parallel_group if not group.is_expert_param else self.expert_data_parallel_group
@@ -1236,7 +1236,7 @@ class ParamAndGradBuffer:
             if should_create_grad_buffer_or_main_weight_buffer:
                 group.main_grad_buffer = DataParallelBuffer(
                     self.ddp_config,
-                    group.params,   # Proxy because the number of gradient parameters is the same as the number of model parameters.
+                    group.params,  # Proxy because the number of gradient parameters is the same as the number of model parameters.
                     is_data_distributed=is_grad_buffer_distributed and group.data_parallel_world_size > 1,
                     dtype=torch.float32 if grad_reduce_in_fp32 else grad_dtype,
                     device=self.device,
