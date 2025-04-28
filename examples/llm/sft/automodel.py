@@ -23,7 +23,7 @@ from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
 from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule
-from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
+from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform, NsysCallback
 
 # Run this example with torchrun, for example:
 # torchrun --nproc-per-node=8 \
@@ -307,6 +307,11 @@ def main():
         'are currently supported only with position_ids and not attention_mask. Hence packed sequences needs to be'
         'run with --attn-implementation=flash_attention_2',
     )
+    parser.add_argument("--enable-nsys-profile", action="store_true", help="Enable nsys profiling.")
+    parser.add_argument("--nsys-profile-start-step", type=int, default=0)
+    parser.add_argument("--nsys-profile-end-step", type=int, default=0)
+    parser.add_argument("--nsys-profile-ranks", type=int, default=[0], nargs="+", help="Global ranks to profile with nsys.")
+    parser.add_argument("--nsys-profile-nvtx-shape", action="store_true", help="Enable NVTX profiling information.")
 
     args = parser.parse_args()
 
@@ -343,6 +348,14 @@ def main():
     if args.use_torch_jit:
         jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False}, use_thunder=False)
         callbacks = [JitTransform(jit_config)]
+    if args.enable_nsys_profile:
+        nsys_callback = NsysCallback(
+            start_step=args.nsys_profile_start_step,
+            end_step=args.nsys_profile_end_step,
+            ranks=args.nsys_profile_ranks,
+            nvtx_ranges=args.nsys_profile_nvtx_shape,
+        )
+        callbacks.append(nsys_callback)
 
     if args.use_te_optimizer:
         # Use TE optimizer
